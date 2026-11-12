@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<link rel="icon" href="data:,">
+<title>Request a song</title>
+<style>
+/* Layout: one narrow column, the set list reads like a printed set list with a request button per line. */
+:root {
+  --bg: #f2f5f7;
+  --card: #ffffff;
+  --fg: #14202b;
+  --muted: #566774;
+  --line: #d9e1e7;
+  --accent: #0b7a85;
+  --accent-fg: #ffffff;
+  --ok: #17703f;
+  --bad: #b3261e;
+  --display: ui-rounded, "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1923;
+    --card: #15232f;
+    --fg: #e8eff4;
+    --muted: #92a5b4;
+    --line: #25384a;
+    --accent: #4cc3cf;
+    --accent-fg: #06222a;
+    --ok: #6fd3a0;
+    --bad: #ff8f86;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.4 var(--body);
+  padding-block: max(20px, env(safe-area-inset-top, 0px)) max(28px, env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 560px; margin: 0 auto; display: grid; gap: 16px; }
+h1 {
+  font: 800 clamp(28px, 8vw, 40px)/1.05 var(--display);
+  letter-spacing: -0.02em;
+  margin: 8px 0 0;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+.sub { margin: 0; color: var(--muted); }
+.now {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: 10px;
+  background: var(--card); border: 1px solid var(--line);
+}
+.now .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); flex: none; }
+.now b { font-weight: 700; }
+.now span { min-width: 0; overflow-wrap: anywhere; }
+.closed {
+  padding: 12px 14px; border-radius: 10px;
+  border: 1px solid var(--bad); color: var(--bad); font-weight: 600;
+}
+.fields { display: grid; gap: 10px; grid-template-columns: 1fr; }
+label { font-size: 13px; font-weight: 600; color: var(--muted); display: grid; gap: 4px; letter-spacing: 0.02em; }
+input[type=text], input[type=search] {
+  font: inherit; color: inherit; background: var(--card);
+  border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; width: 100%;
+}
+input:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+li {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 0; border-bottom: 1px solid var(--line);
+}
+.t { flex: 1; min-width: 0; }
+.t strong { display: block; font-weight: 700; overflow-wrap: anywhere; }
+.t small { display: block; color: var(--muted); overflow-wrap: anywhere; }
+.t .tag { display: block; color: var(--accent); font-size: 13px; font-weight: 600; }
+button.req {
+  flex: none; min-width: 104px; min-height: 44px; padding: 0 16px;
+  font: 700 15px var(--body); border-radius: 999px; cursor: pointer;
+  border: 2px solid var(--accent); background: var(--accent); color: var(--accent-fg);
+}
+button.req.more { background: transparent; color: var(--accent); }
+button.req:disabled { cursor: default; opacity: 0.55; }
+button.req.done { background: transparent; color: var(--ok); border-color: var(--ok); opacity: 1; }
+.empty { color: var(--muted); padding: 20px 0; }
+#toast {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: max(20px, env(safe-area-inset-bottom, 0px));
+  background: var(--fg); color: var(--bg);
+  padding: 12px 18px; border-radius: 999px; font-weight: 600;
+  max-width: calc(100vw - 32px); text-align: center;
+  opacity: 0; pointer-events: none; transition: opacity 0.2s;
+}
+#toast.show { opacity: 1; }
+#toast.err { background: var(--bad); color: #fff; }
+@media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 id="title">Request a song</h1>
+    <p class="sub">Tap a song to put it in the queue.</p>
+  </header>
+
+  <div class="now" id="now" hidden><span class="dot"></span><span><b>Playing now:</b> <span id="nowText"></span></span></div>
+  <div class="closed" id="closed" hidden>Requests are closed right now.</div>
+
+  <div class="fields">
+    <label for="name">Your name (optional)
+      <input type="text" id="name" maxlength="40" autocomplete="given-name" placeholder="So the performer can say hi">
+    </label>
+    <label for="q">Find a song
+      <input type="search" id="q" placeholder="Title or artist" autocomplete="off">
+    </label>
+  </div>
+
+  <ul id="list"></ul>
+  <div class="empty" id="status">Loading the song list...</div>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+  'use strict';
+  const $ = id => document.getElementById(id);
+
+  const read = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k)); return v == null ? d : v; } catch (_) { return d; } };
+  const write = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} };
+
+  let cid = read('sr_cid', '');
+  if (!cid) {
+    cid = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2);
+    write('sr_cid', cid);
+  }
+  const mine = new Set(read('sr_mine', []));
+  $('name').value = read('sr_name', '');
+  $('name').addEventListener('change', () => write('sr_name', $('name').value.trim()));
+
+  let st = null;
+  let toastTimer = null;
+  function toast(msg, bad) {
+    const t = $('toast');
+    t.textContent = msg;
+    t.className = 'show' + (bad ? ' err' : '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.className = ''; }, 2600);
+  }
+
+  function render() {
+    if (!st) return;
+    document.title = st.title;
+    $('title').textContent = st.title;
+    $('closed').hidden = st.open;
+    $('now').hidden = !st.now;
+    if (st.now) $('nowText').textContent = st.now.title + (st.now.artist ? ' by ' + st.now.artist : '');
+
+    for (const id of [...mine]) if (!st.queued.includes(id)) mine.delete(id);
+    write('sr_mine', [...mine]);
+
+    const q = $('q').value.trim().toLowerCase();
+    const songs = st.songs
+      .filter(s => !q || (s.title + ' ' + s.artist).toLowerCase().includes(q))
+      .sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
+
+    const list = $('list');
+    list.textContent = '';
+    for (const s of songs) {
+      const li = document.createElement('li');
+      const t = document.createElement('div');
+      t.className = 't';
+      const strong = document.createElement('strong');
+      strong.textContent = s.title;
+      t.appendChild(strong);
+      if (s.artist) {
+        const small = document.createElement('small');
+        small.textContent = s.artist;
+        t.appendChild(small);
+      }
+      if (st.planned && st.planned.includes(s.id)) {
+        const tag = document.createElement('span');
+        tag.className = 'tag';
+        tag.textContent = "On tonight's setlist";
+        t.appendChild(tag);
+      }
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'req';
+      const isMine = mine.has(s.id);
+      const queued = st.queued.includes(s.id);
+      if (isMine) { b.textContent = 'Requested'; b.classList.add('done'); b.disabled = true; }
+      else if (queued) { b.textContent = 'Me too'; b.classList.add('more'); }
+      else b.textContent = 'Request';
+      if (!st.open) b.disabled = true;
+      b.addEventListener('click', () => request(s.id, b));
+      li.append(t, b);
+      list.appendChild(li);
+    }
+
+    const status = $('status');
+    if (!st.songs.length) { status.hidden = false; status.textContent = 'The song list is not ready yet. Check back in a moment.'; }
+    else if (!songs.length) { status.hidden = false; status.textContent = 'No songs match that search.'; }
+    else status.hidden = true;
+  }
+
+  async function request(id, btn) {
+    btn.disabled = true;
+    try {
+      const r = await fetch('/api/request', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ songId: id, name: $('name').value.trim(), cid }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 409) { mine.add(id); toast(j.error, true); }
+      else if (!r.ok) throw new Error(j.error || 'Something went wrong. Try again.');
+      else { mine.add(id); toast('Added to the queue'); }
+    } catch (e) {
+      toast(e.message || 'Could not reach the server. Check your signal.', true);
+    }
+    render();
+  }
+
+  $('q').addEventListener('input', render);
+
+  fetch('/api/public').then(r => r.json()).then(j => { st = j; render(); }).catch(() => {});
+  const es = new EventSource('/events');
+  es.onmessage = e => { try { st = JSON.parse(e.data); render(); } catch (_) {} };
+  setTimeout(() => {
+    if (!st) $('status').textContent = 'Cannot reach the song list. Check your signal and reload.';
+  }, 10000);
+})();
+</script>
+</body>
+</html>
