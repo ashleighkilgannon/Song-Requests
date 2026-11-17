@@ -17,22 +17,65 @@ if (!PIN) {
 
 // ---------- state ----------
 let state = { title: 'Request a song', open: true, songs: [], queue: [], setlist: [], current: null };
-try {
-  const saved = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-  if (saved && typeof saved === 'object') {
-    if (typeof saved.title === 'string') state.title = saved.title;
-    if (typeof saved.open === 'boolean') state.open = saved.open;
-    if (Array.isArray(saved.songs)) state.songs = saved.songs;
-    if (Array.isArray(saved.queue)) state.queue = saved.queue;
-    if (Array.isArray(saved.setlist)) state.setlist = saved.setlist.filter(x => typeof x === 'string');
-    if (typeof saved.current === 'string') state.current = saved.current;
+function applySaved(saved) {
+  if (!saved || typeof saved !== 'object') return;
+  if (typeof saved.title === 'string') state.title = saved.title;
+  if (typeof saved.open === 'boolean') state.open = saved.open;
+  if (Array.isArray(saved.songs)) state.songs = saved.songs;
+  if (Array.isArray(saved.queue)) state.queue = saved.queue;
+  if (Array.isArray(saved.setlist)) state.setlist = saved.setlist.filter(x => typeof x === 'string');
+  if (typeof saved.current === 'string') state.current = saved.current;
+}
+try { applySaved(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'))); } catch (_) { /* first run, or a host with no saved file */ }
+
+// Optional lasting storage. Free hosts wipe their disk on every restart, so set these two
+// variables (from a free Upstash Redis database) and the data is kept there instead.
+const REDIS_URL = (process.env.UPSTASH_REDIS_REST_URL || '').replace(/\/+$/, '');
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
+const REDIS_KEY = 'songrequest:state';
+const useRedis = !!(REDIS_URL && REDIS_TOKEN);
+let redisWritable = false;
+
+async function redis(cmd) {
+  const r = await fetch(REDIS_URL, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + REDIS_TOKEN, 'content-type': 'application/json' },
+    body: JSON.stringify(cmd),
+    signal: AbortSignal.timeout(8000),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) throw new Error(j.error || 'HTTP ' + r.status);
+  return j.result;
+}
+
+async function loadRedis() {
+  for (let i = 1; i <= 4; i++) {
+    try {
+      const v = await redis(['GET', REDIS_KEY]);
+      if (v) applySaved(JSON.parse(v));
+      redisWritable = true; // only write once a read has worked, so a failed read can never wipe saved data
+      console.log(v ? 'Loaded saved songs from Upstash.' : 'Upstash is connected and empty.');
+      return;
+    } catch (e) {
+      console.log('Could not read Upstash (try ' + i + '): ' + e.message);
+      await new Promise(r => setTimeout(r, 1500));
+    }
   }
-} catch (_) { /* first run, or a host with no saved file */ }
+  console.log('Upstash is not reachable. Running without lasting storage until the next restart.');
+}
 
 let saveTimer = null;
+let redisWarned = false;
 function save() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => fs.writeFile(DATA_FILE, JSON.stringify(state), () => {}), 500);
+  saveTimer = setTimeout(() => {
+    const json = JSON.stringify(state);
+    fs.writeFile(DATA_FILE, json, () => {});
+    if (useRedis && redisWritable) {
+      if (json.length > 900000) { if (!redisWarned) console.log('Data is too large for Upstash (about 1 MB limit).'); redisWarned = true; return; }
+      redis(['SET', REDIS_KEY, json]).catch(e => console.log('Could not save to Upstash: ' + e.message));
+    }
+  }, 500);
 }
 
 const str = (v, n) => String(v == null ? '' : v).slice(0, n);
@@ -342,7 +385,7 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const p = url.pathname;
 
-    if (req.method === 'GET' && p === '/healthz') return send(res, 200, { ok: true });
+    if (req.method === 'GET' && p === '/healthz') return send(res, 200, { ok: true, storage: useRedis ? (redisWritable ? 'upstash' : 'upstash-unreachable') : 'disk' });
     if (req.method === 'GET' && p === '/api/public') return send(res, 200, publicView());
     if (req.method === 'GET' && p === '/events') return openStream(req, res, pubClients, publicView());
 
@@ -367,4 +410,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => console.log(`Song requests running on port ${PORT}`));
+(async () => {
+  if (useRedis) await loadRedis();
+  server.listen(PORT, () => console.log(`Song requests running on port ${PORT}`));
+})();
