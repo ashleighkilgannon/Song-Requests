@@ -75,7 +75,7 @@ textarea { font-family: var(--mono); font-size: 14px; min-height: 260px; resize:
 .pill.off { border-color: var(--bad); color: var(--bad); }
 #conn { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); flex: none; }
 #conn.up { background: var(--good); }
-#sideToggle { display: none; }
+#sideToggle { display: inline-flex; }
 
 main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; min-height: 0; }
 #stageCol { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; min-width: 0; }
@@ -142,9 +142,12 @@ aside { border-left: 1px solid var(--line); background: var(--panel); display: g
 #toast.show { opacity: 1; }
 #toast.err { background: var(--bad); color: #2a0703; }
 
+@media (min-width: 901px) {
+  #app.side-hidden main { grid-template-columns: minmax(0, 1fr); }
+  #app.side-hidden aside { display: none; }
+}
 @media (max-width: 900px) {
   main { grid-template-columns: minmax(0, 1fr); }
-  #sideToggle { display: inline-flex; }
   .sidehead { display: flex; justify-content: flex-end; padding: 8px 12px; border-bottom: 1px solid var(--line); }
   aside {
     grid-template-rows: auto auto minmax(0, 1fr);
@@ -180,7 +183,7 @@ aside { border-left: 1px solid var(--line); background: var(--panel); display: g
       <div class="np" id="nowTitle">Nothing playing</div>
     </div>
     <button class="pill" id="reqToggle" type="button">Requests open</button>
-    <button class="pill" id="sideToggle" type="button">Queue <span class="badge" id="qCountTop">0</span></button>
+    <button class="pill" id="sideToggle" type="button" aria-label="Show or hide the queue, setlist, songs and share panel">Panel <span class="badge" id="qCountTop" title="Requests waiting">0</span></button>
   </div>
 
   <main>
@@ -663,7 +666,17 @@ aside { border-left: 1px solid var(--line); background: var(--panel); display: g
   }
   for (const b of document.querySelectorAll('.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
   function closeSide() { $('app').classList.remove('side-open'); }
-  $('sideToggle').addEventListener('click', () => $('app').classList.toggle('side-open'));
+  const isWide = () => window.matchMedia('(min-width: 901px)').matches;
+  try { if (ls.get('sr_hide') === '1') $('app').classList.add('side-hidden'); } catch (_) {}
+  $('sideToggle').addEventListener('click', () => {
+    if (isWide()) {
+      const hidden = $('app').classList.toggle('side-hidden');
+      ls.set('sr_hide', hidden ? '1' : '0');
+    } else {
+      $('app').classList.toggle('side-open');
+    }
+    fitSoon();
+  });
   $('sideClose').addEventListener('click', closeSide);
 
   // ---------- chord sheet rendering ----------
@@ -731,6 +744,29 @@ aside { border-left: 1px solid var(--line); background: var(--panel); display: g
   const sheet = $('sheet');
   let shownKey = null, shownId = null;
 
+  // Shrinks the text just enough that the longest line fits the screen. A+ and A- set the largest size allowed.
+  let effFs = fontSize;
+  function fit() {
+    effFs = fontSize;
+    sheet.style.setProperty('--fs', fontSize + 'px');
+    if (!curSong()) return;
+    let worst = 1;
+    sheet.querySelectorAll('.body .pair, .body .ln').forEach(e => {
+      if (e.scrollWidth > e.clientWidth + 1) worst = Math.min(worst, e.clientWidth / e.scrollWidth);
+    });
+    if (worst < 1) {
+      effFs = Math.max(14, Math.floor(fontSize * worst * 0.97));
+      sheet.style.setProperty('--fs', effFs + 'px');
+    }
+  }
+  let fitQueued = false;
+  function fitSoon() {
+    if (fitQueued) return;
+    fitQueued = true;
+    requestAnimationFrame(() => { fitQueued = false; fit(); });
+  }
+  if ('ResizeObserver' in window) new ResizeObserver(fitSoon).observe(sheet);
+
   function renderSheet() {
     const song = curSong();
     const key = song ? JSON.stringify([song.id, song.title, song.artist, song.key, song.text]) : 'idle|' + qrUrl;
@@ -758,6 +794,7 @@ aside { border-left: 1px solid var(--line); background: var(--panel); display: g
       renderBody(song.text || '', body);
       sheet.append(head, body);
     }
+    fit();
     if (!sameSong) { sheet.scrollTop = 0; acc = 0; setScrolling(false); }
   }
 
@@ -774,11 +811,11 @@ aside { border-left: 1px solid var(--line); background: var(--panel); display: g
   // Height of one lyric line, gaps and section labels included, so the scroll keeps time across a whole song.
   let lpKey = '', lpVal = 0;
   function linePx() {
-    const key = shownKey + '|' + fontSize + '|' + sheet.clientWidth;
+    const key = shownKey + '|' + effFs + '|' + sheet.clientWidth;
     if (key !== lpKey) {
       const body = sheet.querySelector('.body');
       const n = sheet.querySelectorAll('.body .ln, .body .pair').length;
-      lpVal = body && n ? body.offsetHeight / n : fontSize * 1.75;
+      lpVal = body && n ? body.offsetHeight / n : effFs * 1.75;
       lpKey = key;
     }
     return lpVal;
@@ -787,7 +824,7 @@ aside { border-left: 1px solid var(--line); background: var(--panel); display: g
     const song = curSong();
     if (!song) return 0;
     if (song.bpm > 0) return linePx() * (song.bpm / 60) / (song.beats * song.bars);
-    return (song.speed / 60) * fontSize * 1.75;
+    return (song.speed / 60) * effFs * 1.75;
   }
   function tick(t) {
     if (scrolling && !dragging) {
@@ -853,7 +890,7 @@ aside { border-left: 1px solid var(--line); background: var(--panel); display: g
   function changeFont(delta) {
     fontSize = Math.min(72, Math.max(18, fontSize + delta));
     ls.set('sr_fs', String(fontSize));
-    sheet.style.setProperty('--fs', fontSize + 'px');
+    fit();
   }
   $('smaller').addEventListener('click', () => changeFont(-2));
   $('bigger').addEventListener('click', () => changeFont(2));
